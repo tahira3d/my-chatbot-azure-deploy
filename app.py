@@ -92,6 +92,12 @@ if prompt and prompt.strip():
             else:
                 output.warning("No text was returned. Try rephrasing your question.")
         except APIError as error:
+            print(
+                "CONNECTION CAUSE:",
+                type(error.__cause__).__name__,
+                str(error.__cause__),
+                flush=True,
+            )
             output.empty()
             status = getattr(error, "status_code", None)
             explanations = {
