@@ -165,7 +165,7 @@ if prompt and prompt.strip():
                 max_retries=1,
             ) as client:
                 history = st.session_state.messages[-20:]
-           reply = get_chatbot_reply(
+            reply = get_chatbot_reply(
                     client=client,
                     deployment=deployment,
                     history=st.session_state.messages[-20:],
