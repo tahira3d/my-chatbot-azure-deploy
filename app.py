@@ -3,11 +3,105 @@ import os
 import ssl
 from pathlib import Path
 from urllib.parse import urlsplit
-
+from typing import Literal
+from pydantic import BaseModel, ConfigDict, ValidationError
 import certifi
 import streamlit as st
 from dotenv import dotenv_values
 from openai import OpenAI, DefaultHttpxClient, APIError
+# Reusable prompt template
+PROMPT_TEMPLATE = """
+You are {bot_name}, a helpful AI assistant.
+
+IDENTITY:
+- When asked your name, identity, or introduction in any language,
+  begin your answer with exactly: "I am {bot_name}."
+- This includes questions like "Who are you?", "Tum kon ho?",
+  "What is your name?", and "Apna naam batao".
+- You are an AI assistant, not the real Tahira Kainat.
+- Do not invent personal details about Tahira Kainat.
+
+RESPONSE STYLE:
+- Use a {friendly} tone.
+- Match the user's language: English, Urdu, or Roman Urdu.
+- Explain technical topics step by step for a {AIdevelopers}.
+- Include examples when useful.
+- If unsure, say so rather than inventing facts.
+- Do not claim access to tools, live information, or past chats
+  unless that information is actually available.
+
+OUTPUT:
+Return an object matching the supplied JSON schema.
+Set bot_name to "{bot_name}".
+Put the complete user-facing response in answer.
+"""
+
+
+SYSTEM_PROMPT = PROMPT_TEMPLATE.format(
+    bot_name="Tahira Kainat Chatbot",
+    tone="friendly, professional, and clear",
+    audience="beginner learning Python and AI",
+)
+
+
+# Defines and validates the expected model output
+class ChatbotResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bot_name: Literal["Tahira Kainat Chatbot"]
+    answer: str
+
+
+def parse_chatbot_output(raw_output: str) -> ChatbotResponse:
+    """Convert JSON text into a validated Python object."""
+    return ChatbotResponse.model_validate_json(raw_output)
+
+
+def get_chatbot_reply(client, deployment, history, question, token_limit):
+    response = client.chat.completions.create(
+        model=deployment,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            *history,
+            {"role": "user", "content": question},
+        ],
+        temperature=0.7,
+        max_tokens=token_limit,
+        stream=False,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "chatbot_response",
+                "strict": True,
+                "schema": ChatbotResponse.model_json_schema(),
+            },
+        },
+    )
+
+    if not response.choices:
+        raise ValueError("The model returned no response.")
+
+    choice = response.choices[0]
+    message = choice.message
+
+    if message.refusal:
+        return message.refusal
+
+    if choice.finish_reason != "stop":
+        raise ValueError(
+            "The response was incomplete or filtered. "
+            "Try a shorter question or increase the reply token limit."
+        )
+
+    if not message.content:
+        raise ValueError("The model returned an empty response.")
+
+    parsed = parse_chatbot_output(message.content)
+
+    if not parsed.answer.strip():
+        raise ValueError("The model returned an empty answer.")
+
+    return parsed.answer
 
 st.set_page_config(page_title="Azure AI Chat", page_icon="💬", layout="centered")
 st.title("💬 Azure AI Chat")
@@ -71,18 +165,13 @@ if prompt and prompt.strip():
                 max_retries=1,
             ) as client:
                 history = st.session_state.messages[-20:]
-                with client.chat.completions.create(
-                    model=deployment,
-                    messages=[{"role": "system", "content": "You are a helpful assistant. Keep answers clear and concise."}]
-                    + history + [{"role": "user", "content": prompt}],
-                    temperature=0.7,
-                    max_tokens=max_tokens,
-                    stream=True,
-                ) as stream:
-                    for chunk in stream:
-                        if chunk.choices and chunk.choices[0].delta.content:
-                            reply += chunk.choices[0].delta.content
-                            output.markdown(reply + " ▌")
+                                reply = get_chatbot_reply(
+                    client=client,
+                    deployment=deployment,
+                    history=st.session_state.messages[-20:],
+                    question=prompt,
+                    token_limit=max_tokens,
+                )
             if reply:
                 output.markdown(reply)
                 st.session_state.messages.extend([
@@ -91,6 +180,12 @@ if prompt and prompt.strip():
                 ])
             else:
                 output.warning("No text was returned. Try rephrasing your question.")
+        except (ValidationError, ValueError):
+            output.empty()
+            st.error(
+                "The response could not be validated. "
+                "Please retry or increase the maximum reply tokens."
+            )
         except APIError as error:
             print(
                 "CONNECTION CAUSE:",
